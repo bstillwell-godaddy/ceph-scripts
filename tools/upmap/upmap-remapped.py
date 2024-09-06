@@ -108,7 +108,7 @@ def main():
 
     try:
       if has_upmap[pgid]:
-        rm_upmap_pg_items(pgid)
+        print(rm_upmap_pg_items(pgid))
         num += 1
         continue
     except KeyError:
@@ -168,7 +168,7 @@ def upmap_pg_items(pgid, mapping):
     print('&')
 
 def rm_upmap_pg_items(pgid):
-  print('ceph osd rm-pg-upmap-items %s &' % pgid)
+  return f'ceph osd rm-pg-upmap-items {pgid} &'
 
 if __name__ == "__main__":
   main()
