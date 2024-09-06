@@ -40,33 +40,115 @@
 
 import json, subprocess, sys
 
+def main():
+  try:
+    OSDS = json.loads(subprocess.getoutput('ceph osd ls -f json | jq -r'))
+    DF = json.loads(subprocess.getoutput('ceph osd df -f json | jq -r .nodes'))
+  except ValueError:
+    eprint('Error loading OSD IDs')
+    sys.exit(1)
+
+  ignore_backfilling = False
+  for arg in sys.argv[1:]:
+    if arg == "--ignore-backfilling":
+      eprint ("All actively backfilling PGs will be ignored.")
+      ignore_backfilling = True
+
+  # discover remapped pgs
+  try:
+    remapped_json = subprocess.getoutput('ceph pg ls remapped -f json | jq -r')
+    remapped = json.loads(remapped_json)
+  except ValueError:
+    eprint('Error loading remapped pgs')
+    sys.exit(1)
+
+  # nautilus compat
+  try:
+    _remapped = remapped['pg_stats']
+    remapped = _remapped
+  except KeyError:
+    eprint("There are no remapped PGs")
+    sys.exit(0)
+
+  # discover existing upmaps
+  osd_dump_json = subprocess.getoutput('ceph osd dump -f json | jq -r')
+  osd_dump = json.loads(osd_dump_json)
+  upmaps = osd_dump['pg_upmap_items']
+
+  # discover pools replicated or erasure
+  pool_type = {}
+  try:
+    for line in subprocess.getoutput('ceph osd pool ls detail').split('\n'):
+      if 'pool' in line:
+        x = line.split(' ')
+        pool_type[x[1]] = x[3]
+  except:
+    eprint('Error parsing pool types')
+    sys.exit(1)
+
+  # discover if each pg is already upmapped
+  has_upmap = {}
+  for pg in upmaps:
+    pgid = str(pg['pgid'])
+    has_upmap[pgid] = True
+
+  # handle each remapped pg
+  print('while ceph status | grep -q "peering\|activating\|laggy"; do sleep 2; done')
+  num = 0
+  for pg in remapped:
+    if num == 50:
+      print('wait; sleep 4; while ceph status | grep -q "peering\|activating\|laggy"; do sleep 2; done')
+      num = 0
+
+    if ignore_backfilling:
+      if "backfilling" in pg['state']:
+        continue
+
+    pgid = pg['pgid']
+
+    try:
+      if has_upmap[pgid]:
+        rm_upmap_pg_items(pgid)
+        num += 1
+        continue
+    except KeyError:
+      pass
+
+    up = pg['up']
+    acting = pg['acting']
+    pool = pgid.split('.')[0]
+    if pool_type[pool] == 'replicated':
+      try:
+        pairs = gen_upmap(up, acting, OSDS, DF, replicated=True)
+      except:
+        continue
+    elif pool_type[pool] == 'erasure':
+      try:
+        pairs = gen_upmap(up, acting, OSDS, DF)
+      except:
+        continue
+    else:
+      eprint('Unknown pool type for %s' % pool)
+      sys.exit(1)
+    upmap_pg_items(pgid, pairs)
+    num += 1
+
+  print('wait; sleep 4; while ceph status | grep -q "peering\|activating\|laggy"; do sleep 2; done')
+
 def eprint(*args, **kwargs):
   print(*args, file=sys.stderr, **kwargs)
 
-try:
-  OSDS = json.loads(subprocess.getoutput('ceph osd ls -f json | jq -r'))
-  DF = json.loads(subprocess.getoutput('ceph osd df -f json | jq -r .nodes'))
-except ValueError:
-  eprint('Error loading OSD IDs')
-  sys.exit(1)
-
-ignore_backfilling = False
-for arg in sys.argv[1:]:
-  if arg == "--ignore-backfilling":
-    eprint ("All actively backfilling PGs will be ignored.")
-    ignore_backfilling = True
-
-def crush_weight(id):
+def crush_weight(id, DF):
   for o in DF:
     if o['id'] == id:
       return o['crush_weight'] * o['reweight']
   return 0
 
-def gen_upmap(up, acting, replicated=False):
+def gen_upmap(up, acting, OSDS, DF, replicated=False):
   assert(len(up) == len(acting))
   pairs = []
   for p in zip(up, acting):
-    if p[0] != p[1] and p[0] in OSDS and crush_weight(p[1]) > 0:
+    if p[0] != p[1] and p[0] in OSDS and crush_weight(p[1], DF) > 0:
       pairs.append(p)
 
   # if replicated, remove indirect mappings
@@ -88,86 +170,5 @@ def upmap_pg_items(pgid, mapping):
 def rm_upmap_pg_items(pgid):
   print('ceph osd rm-pg-upmap-items %s &' % pgid)
 
-
-# start here
-
-# discover remapped pgs
-try:
-  remapped_json = subprocess.getoutput('ceph pg ls remapped -f json | jq -r')
-  remapped = json.loads(remapped_json)
-except ValueError:
-  eprint('Error loading remapped pgs')
-  sys.exit(1)
-
-# nautilus compat
-try:
-  _remapped = remapped['pg_stats']
-  remapped = _remapped
-except KeyError:
-  eprint("There are no remapped PGs")
-  sys.exit(0)
-
-# discover existing upmaps
-osd_dump_json = subprocess.getoutput('ceph osd dump -f json | jq -r')
-osd_dump = json.loads(osd_dump_json)
-upmaps = osd_dump['pg_upmap_items']
-
-# discover pools replicated or erasure
-pool_type = {}
-try:
-  for line in subprocess.getoutput('ceph osd pool ls detail').split('\n'):
-    if 'pool' in line:
-      x = line.split(' ')
-      pool_type[x[1]] = x[3]
-except:
-  eprint('Error parsing pool types')
-  sys.exit(1)
-
-# discover if each pg is already upmapped
-has_upmap = {}
-for pg in upmaps:
-  pgid = str(pg['pgid'])
-  has_upmap[pgid] = True
-
-# handle each remapped pg
-print('while ceph status | grep -q "peering\|activating\|laggy"; do sleep 2; done')
-num = 0
-for pg in remapped:
-  if num == 50:
-    print('wait; sleep 4; while ceph status | grep -q "peering\|activating\|laggy"; do sleep 2; done')
-    num = 0
-
-  if ignore_backfilling:
-    if "backfilling" in pg['state']:
-      continue
-
-  pgid = pg['pgid']
-
-  try:
-    if has_upmap[pgid]:
-      rm_upmap_pg_items(pgid)
-      num += 1
-      continue
-  except KeyError:
-    pass
-
-  up = pg['up']
-  acting = pg['acting']
-  pool = pgid.split('.')[0]
-  if pool_type[pool] == 'replicated':
-    try:
-      pairs = gen_upmap(up, acting, replicated=True)
-    except:
-      continue
-  elif pool_type[pool] == 'erasure':
-    try:
-      pairs = gen_upmap(up, acting)
-    except:
-      continue
-  else:
-    eprint('Unknown pool type for %s' % pool)
-    sys.exit(1)
-  upmap_pg_items(pgid, pairs)
-  num += 1
-
-print('wait; sleep 4; while ceph status | grep -q "peering\|activating\|laggy"; do sleep 2; done')
+if __name__ == "__main__":
+  main()
