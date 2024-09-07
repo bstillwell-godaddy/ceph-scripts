@@ -130,7 +130,7 @@ def main():
     else:
       eprint('Unknown pool type for %s' % pool)
       sys.exit(1)
-    upmap_pg_items(pgid, pairs)
+    print(upmap_pg_items(pgid, pairs))
     num += 1
 
   print('wait; sleep 4; while ceph status | grep -q "peering\|activating\|laggy"; do sleep 2; done')
@@ -161,11 +161,11 @@ def gen_upmap(up, acting, OSDS, DF, replicated=False):
   return pairs
 
 def upmap_pg_items(pgid, mapping):
-  if len(mapping):
-    print('ceph osd pg-upmap-items %s ' % pgid, end='')
-    for pair in mapping:
-      print('%s %s ' % pair, end='')
-    print('&')
+  cmd = f'ceph osd pg-upmap-items {pgid} '
+  for map_from, map_to in mapping:
+    cmd += f'{map_from} {map_to} '
+  cmd += '&'
+  return cmd
 
 def rm_upmap_pg_items(pgid):
   return f'ceph osd rm-pg-upmap-items {pgid} &'
