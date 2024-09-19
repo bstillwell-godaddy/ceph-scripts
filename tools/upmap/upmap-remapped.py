@@ -146,19 +146,25 @@ def crush_weight(id, DF):
 
 def gen_upmap(up, acting, OSDS, DF, replicated=False):
   assert(len(up) == len(acting))
-  pairs = []
-  for p in zip(up, acting):
-    if p[0] != p[1] and p[0] in OSDS and crush_weight(p[1], DF) > 0:
-      pairs.append(p)
 
-  # if replicated, remove indirect mappings
-  # e.g. ceph osd pg-upmap-items 4.5fd 603 383 499 804 804 530 &
-  if replicated:
-    p = list(pairs)
-    u = set([x[0] for x in p])
-    a = set([x[1] for x in p])
-    pairs = list(zip(u-a, a-u))
-  return pairs
+  # Create mappings needed to make the PG clean
+  mappings = [(u, a) for u, a in zip(up, acting) if u != a]
+
+  # Re-order the mappings to work well with EC pools
+  ordered_mappings = []
+
+  # Add mappings where the up OSD already exists in the acting set
+  for osd in reversed(range(len(up))):
+    for mapping in mappings:
+      if mapping[0] in acting and acting.index(mapping[0]) == osd:
+        ordered_mappings.append(mapping)
+
+  # Add mappings where the up OSD doesn't exist in the acting set
+  for mapping in mappings:
+    if mapping[0] not in acting:
+      ordered_mappings.append(mapping)
+
+  return ordered_mappings
 
 def upmap_pg_items(pgid, mapping):
   cmd = f'ceph osd pg-upmap-items {pgid} '
