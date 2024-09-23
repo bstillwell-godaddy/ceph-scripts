@@ -150,21 +150,28 @@ def gen_upmap(up, acting, OSDS, DF, replicated=False):
   # Create mappings needed to make the PG clean
   mappings = [(u, a) for u, a in zip(up, acting) if u != a]
 
-  # Re-order the mappings to work well with EC pools
-  ordered_mappings = []
+  # Handle the situation where the src and dst of one mapping matches the dst
+  # and src of another.  Example: (314, 272) & (272, 314)
+  for (x, y) in mappings:
+    if (y, x) in mappings:
+      mappings.remove((x, y))
+      mappings.remove((y, x))
 
-  # Add mappings where the up OSD already exists in the acting set
-  for osd in reversed(range(len(up))):
-    for mapping in mappings:
-      if mapping[0] in acting and acting.index(mapping[0]) == osd:
-        ordered_mappings.append(mapping)
+  # Do multiple passes of a modified bubble sort to order the mappings so that
+  # data is moved off an OSD before it is moved on to it.  Stop when no
+  # mappings are swapped.
+  while True:
+    swapped = False
+    for i in range(len(mappings)-1):
+      for j in range(i+1, len(mappings)):
+        if mappings[j][0] == mappings[i][1] and mappings[j][1] != mappings[i][0]:
+          mappings[i], mappings[j] = mappings[j], mappings[i]
+          swapped = True
 
-  # Add mappings where the up OSD doesn't exist in the acting set
-  for mapping in mappings:
-    if mapping[0] not in acting:
-      ordered_mappings.append(mapping)
+    if not swapped:
+      break
 
-  return ordered_mappings
+  return mappings
 
 def upmap_pg_items(pgid, mapping):
   cmd = f'ceph osd pg-upmap-items {pgid} '
